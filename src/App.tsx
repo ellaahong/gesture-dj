@@ -16,8 +16,25 @@ const MIN_HAND_DETECTION_CONFIDENCE = 0.5
 const MIN_HAND_PRESENCE_CONFIDENCE = 0.5
 const MIN_TRACKING_CONFIDENCE = 0.5
 
+// Palm X (mirrored, 0 = left edge of frame, 1 = right edge) at or beyond
+// these bounds is treated as fully committed to one deck. Linear in between.
+// Keeps a resting/relaxed hand position near either edge from needing to be
+// pixel-perfect to hit full volume on one side.
+const CROSSFADER_DEAD_ZONE_LOW = 0.35
+const CROSSFADER_DEAD_ZONE_HIGH = 0.65
+
+function mapPalmXToCrossfader(mirroredX: number): number {
+  if (mirroredX <= CROSSFADER_DEAD_ZONE_LOW) return 0
+  if (mirroredX >= CROSSFADER_DEAD_ZONE_HIGH) return 1
+  return (
+    (mirroredX - CROSSFADER_DEAD_ZONE_LOW) /
+    (CROSSFADER_DEAD_ZONE_HIGH - CROSSFADER_DEAD_ZONE_LOW)
+  )
+}
+
 function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
   const recognizerRef = useRef<GestureRecognizer | null>(null)
   const smoothedXRef = useRef<number | null>(null)
   const startedRef = useRef(false)
@@ -33,7 +50,7 @@ function App() {
   const [started, setStarted] = useState(false)
   const [rawX, setRawX] = useState<number | null>(null)
   const [smoothedX, setSmoothedX] = useState<number | null>(null)
-  const [gain, setGainDisplay] = useState<number | null>(null)
+  const [gestureMapped, setGestureMapped] = useState<number | null>(null)
   const [alpha, setAlpha] = useState(SMOOTHING_ALPHA)
   const [handDetected, setHandDetected] = useState(false)
   const [dropoutCount, setDropoutCount] = useState(0)
@@ -72,6 +89,10 @@ function App() {
     video.srcObject = stream
     await video.play()
 
+    const canvas = canvasRef.current!
+    canvas.width = video.videoWidth
+    canvas.height = video.videoHeight
+
     const vision = await FilesetResolver.forVisionTasks(
       'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm',
     )
@@ -86,6 +107,8 @@ function App() {
       minHandPresenceConfidence: MIN_HAND_PRESENCE_CONFIDENCE,
       minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
     })
+
+    const ctx = canvas.getContext('2d')!
 
     const loop = () => {
       const recognizer = recognizerRef.current
@@ -102,31 +125,55 @@ function App() {
         wasHandDetectedRef.current = detected
         setHandDetected(detected)
 
+        ctx.clearRect(0, 0, canvas.width, canvas.height)
+
         if (landmarks) {
-          const raw =
+          // Canvas is CSS-mirrored to match the video, so draw with the raw
+          // (unmirrored) landmark coordinates - the mirroring is handled
+          // once, visually, not by flipping numbers here.
+          ctx.fillStyle = 'red'
+          for (const point of landmarks) {
+            ctx.beginPath()
+            ctx.arc(point.x * canvas.width, point.y * canvas.height, 4, 0, Math.PI * 2)
+            ctx.fill()
+          }
+
+          const palmRawX =
             PALM_LANDMARKS.reduce((sum, i) => sum + landmarks[i].x, 0) /
             PALM_LANDMARKS.length
+          const palmRawY =
+            PALM_LANDMARKS.reduce((sum, i) => sum + landmarks[i].y, 0) /
+            PALM_LANDMARKS.length
+
+          ctx.fillStyle = 'lime'
+          ctx.beginPath()
+          ctx.arc(palmRawX * canvas.width, palmRawY * canvas.height, 14, 0, Math.PI * 2)
+          ctx.fill()
+
+          // Mirrored so x=0 is the user's left in the mirrored video, matching
+          // what they see on screen, not the raw camera sensor's left edge.
+          const mirroredX = 1 - palmRawX
 
           const prevSmoothed = smoothedXRef.current
           const smoothed =
             prevSmoothed === null
-              ? raw
-              : prevSmoothed + alphaRef.current * (raw - prevSmoothed)
+              ? mirroredX
+              : prevSmoothed + alphaRef.current * (mirroredX - prevSmoothed)
           smoothedXRef.current = smoothed
 
-          // Intentionally not wired to audio right now - testing the two-deck
-          // engine with mouse controls only. Re-connect here later, e.g.
-          // audioEngine.setCrossfader(smoothed).
-          setRawX(raw)
+          const mapped = mapPalmXToCrossfader(smoothed)
+          handleCrossfader(mapped)
+
+          setRawX(mirroredX)
           setSmoothedX(smoothed)
-          setGainDisplay(smoothed)
+          setGestureMapped(mapped)
           setConfidence(result.handedness[0]?.[0]?.score ?? null)
         } else {
-          // No hand this frame: deliberately don't touch rawX/smoothedX/gain
-          // or smoothedXRef - they hold their last known values, so the
-          // gain freezes instead of snapping to 0 or jumping when tracking
-          // resumes. Confidence has no meaning with no detection, so that
-          // one does reset.
+          // No hand this frame: deliberately don't touch rawX/smoothedX,
+          // smoothedXRef, or the crossfader - they hold their last known
+          // values, so the crossfader freezes instead of snapping when
+          // tracking resumes. Confidence has no meaning with no detection,
+          // so that one does reset.
           setConfidence(null)
         }
       }
@@ -141,7 +188,18 @@ function App() {
         START
       </button>
 
-      <video ref={videoRef} muted playsInline style={{ transform: 'scaleX(-1)' }} />
+      <div style={{ position: 'relative', display: 'inline-block' }}>
+        <video ref={videoRef} muted playsInline style={{ transform: 'scaleX(-1)' }} />
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            transform: 'scaleX(-1)',
+          }}
+        />
+      </div>
 
       <div>
         <label>
@@ -175,7 +233,7 @@ function App() {
           '    smoothed X: ' +
           (smoothedX?.toFixed(4) ?? '-') +
           '\n'}
-        {'gain: ' + (gain?.toFixed(4) ?? '-')}
+        {'gesture-mapped crossfader: ' + (gestureMapped?.toFixed(4) ?? '-')}
       </pre>
 
       <hr />

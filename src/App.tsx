@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { FilesetResolver, GestureRecognizer } from '@mediapipe/tasks-vision'
-import { audioEngine } from './lib/audioEngine'
+import { audioEngine, type Deck } from './lib/audioEngine'
 
 // Palm-center landmarks: wrist (0) + the four knuckles (5, 9, 13, 17).
 const PALM_LANDMARKS = [0, 5, 9, 13, 17]
@@ -39,6 +39,29 @@ function App() {
   const [dropoutCount, setDropoutCount] = useState(0)
   const [confidence, setConfidence] = useState<number | null>(null)
 
+  const [playingA, setPlayingA] = useState(false)
+  const [playingB, setPlayingB] = useState(false)
+  const [volumeA, setVolumeA] = useState(1)
+  const [volumeB, setVolumeB] = useState(1)
+  const [crossfader, setCrossfaderState] = useState(0.5)
+
+  function handleToggle(deck: Deck) {
+    const playing = audioEngine.toggle(deck)
+    if (deck === 'a') setPlayingA(playing)
+    else setPlayingB(playing)
+  }
+
+  function handleVolume(deck: Deck, value: number) {
+    audioEngine.setVolume(deck, value)
+    if (deck === 'a') setVolumeA(value)
+    else setVolumeB(value)
+  }
+
+  function handleCrossfader(value: number) {
+    audioEngine.setCrossfader(value)
+    setCrossfaderState(value)
+  }
+
   async function handleStart() {
     if (startedRef.current) return
     startedRef.current = true
@@ -63,8 +86,6 @@ function App() {
       minHandPresenceConfidence: MIN_HAND_PRESENCE_CONFIDENCE,
       minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
     })
-
-    await audioEngine.play('/audio/deck-a.mp3')
 
     const loop = () => {
       const recognizer = recognizerRef.current
@@ -93,8 +114,9 @@ function App() {
               : prevSmoothed + alphaRef.current * (raw - prevSmoothed)
           smoothedXRef.current = smoothed
 
-          audioEngine.setGain(smoothed)
-
+          // Intentionally not wired to audio right now - testing the two-deck
+          // engine with mouse controls only. Re-connect here later, e.g.
+          // audioEngine.setCrossfader(smoothed).
           setRawX(raw)
           setSmoothedX(smoothed)
           setGainDisplay(smoothed)
@@ -154,6 +176,75 @@ function App() {
           (smoothedX?.toFixed(4) ?? '-') +
           '\n'}
         {'gain: ' + (gain?.toFixed(4) ?? '-')}
+      </pre>
+
+      <hr />
+
+      <div>
+        <button onClick={() => handleToggle('a')}>
+          Deck A: {playingA ? 'PAUSE' : 'PLAY'}
+        </button>
+        <label>
+          {' vol A: '}
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={volumeA}
+            onChange={(e) => handleVolume('a', Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <div>
+        <button onClick={() => handleToggle('b')}>
+          Deck B: {playingB ? 'PAUSE' : 'PLAY'}
+        </button>
+        <label>
+          {' vol B: '}
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={volumeB}
+            onChange={(e) => handleVolume('b', Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <div>
+        <label>
+          crossfader (0 = A, 1 = B):
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={crossfader}
+            onChange={(e) => handleCrossfader(Number(e.target.value))}
+          />
+        </label>
+      </div>
+
+      <pre>
+        {'deck A: ' +
+          (playingA ? 'PLAYING' : 'PAUSED') +
+          '    volume A: ' +
+          volumeA.toFixed(4) +
+          '\n'}
+        {'deck B: ' +
+          (playingB ? 'PLAYING' : 'PAUSED') +
+          '    volume B: ' +
+          volumeB.toFixed(4) +
+          '\n'}
+        {'crossfader: ' +
+          crossfader.toFixed(4) +
+          '    gainA: ' +
+          Math.cos((crossfader * Math.PI) / 2).toFixed(4) +
+          '    gainB: ' +
+          Math.sin((crossfader * Math.PI) / 2).toFixed(4)}
       </pre>
     </div>
   )

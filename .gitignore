@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local audio files (don't commit copyrighted music)
+public/audio/*.mp3
